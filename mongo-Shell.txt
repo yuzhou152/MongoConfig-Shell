@@ -1,0 +1,198 @@
+#db.version() = 3.4.1	亲测可用
+post = {"title":"titlevalue"}
+
+一、common
+1.import
+mongoimport -d test -c table1 --file /opt/mongo/pattern_file/primer-dataset.json
+
+2.explain
+db.joe.find().explain()		
+
+3.status
+db.serverStatus()	//shell
+mongostat		//bash
+
+4.备份
+	a.关机，复制dbpath
+	b.热备份，mongodump    -u "root3" -p "123456" --authenticationDatabase "admin" -d admin -o data_backup			备份admin database到data_backup目录
+		
+		b.1 db.fsyncLock()	备份时更新cache中的数据到disk，并上锁，不能执行更新操作
+		b.2 db.fsyncUnlock()	备份完毕解锁
+		b.3 db.currentOp()	检查已解锁
+
+	c.热恢复，mongorestore -u "root3" -p "123456" --authenticationDatabase "admin" -d admin --drop data_backup/admin/	把data_backup/admin目录下的数据恢复到admin的database中，并在恢复前先删除admin db中的数据
+																注：备份的数据会取代线上所有的数据，相当于还原
+
+	d.修复，mongod --repire		启动修复
+		db.repairDatabase()	热修复某个db
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+二、collections's operations
+
+A.ceate
+db.createCollection("collectionName")
+db.createCollection("collectionName",{"capped":true,"size":100000,"max":100})	//创建一个最大100000b，最多100个文档的集合	固定集合，先进先出
+
+B.drop
+db.collectionName.drop()
+
+1.create
+db.collectionName.insert({post})
+db.collectionName.save({post})			//存在时更新，否则插入
+
+2.remove
+db.collectionName.remove({"_id":"1"})
+db.collectionName.remove()
+
+3.update
+db.collectionName.update({"_id":"1"},post)					//整体修改
+db.collectionName.update({"_id":"1"},{$set:{"newname" : "joe"}})		//局部修改 全部类型
+db.collectionName.update({"_id":"1"},{$set:{"comments.0" : "joe"}})		//局部修改 全部类型 数组
+db.collectionName.update({"_id":"1"},{$inc:{"grade":100}})			//局部修改 只能用于数值类型 默认+运算
+
+db.collectionName.update({"_id":"1"},{$push:{"comments":{"grade":100}}})	//push到list
+db.collectionName.update({"_id":"1"},{$pop:{"comments":1}})			//从list/set消费
+db.collectionName.update({"_id":"1"},{$addToSet:{"comments":{"grade":100}}})	//push到set
+db.collectionName.update({"_id":"1"},{$addToSet:{"comments":{$each:[{"grade":300},{"grade":300},{"grade":400}]}}})	//push到set
+
+db.joe.update({"name":"smith"},{"$inc":{"age":10}},false,true)			//多文档更新
+
+
+
+事物：添加参数(true)在最后
+Exm：
+db.collectionName.insert({post},true)
+db.collectionName.remove({"_id":"1"},true)
+db.collectionName.update({"_id":"1"},post,true)
+
+Exp:批量操作
+
+for(i=0; i<100; i++){ db.joe.insert({"age":i}) }
+var cursor = db.joe.find()
+while(cursor.hasNext()){ print(cursor.next().age )}
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+5.find
+db.collectionName.find({"_id":"1"})
+db.collectionName.findOne()
+
+db.collectionName.count({"borough" : "Brooklyn"})
+
+A.条件
+	db.collectionName.find({"name": /^smith?$/ })		//正则
+
+	db.collectionName.find({"age":{"$lte":11,"$gte":3}})	//数字类型
+
+	start = new Date("01/01/2017 01/01/01")
+	db.collectionName.find({"date":{"$lt":start}})		//日期类型
+
+	db.collectionName.find({"name":{"$ne":"smith"}})	// !=
+
+	db.collectionName.find({"age":{"$in":[20,10,"3"]}})		//in
+	db.collectionName.find({"age":{"$nin":[20,10,"3"]}})		//not in
+
+	db.collectionName.find({"$or":[{"age":10},{"name":"smith"}]})	//or
+
+	db.collectionName.find({"$or":[{"age":10},{"name":{"$in":["smith","leo","bob"]}}]})	//or-in组合
+
+	db.collectionName.find({"age":{"$mod":[3,1]}})		//除以第一个数，要求余数必须为第二个数
+
+	db.collectionName.find({"name":{"$ne":null,"$exists":true}})	//null-exists组合
+
+	db.collectionName.find().skip(2).limit(10).sort({"age":1})		//limit - sort - skip
+	db.collectionName.find().sort({"$natural":-1})			//按插入时的顺序倒序
+
+
+	db.collectionName.find({"fruit":"apple"})		//list查询 
+	db.collectionName.find({"fruit.0":"apple"})
+
+	Exp:geo
+	db.collectionName.find({"coord" : {"$within":{"$center":[[-73.871194, 40.6730975],5]}}})		//圆心-半径
+	db.collectionName.find({"coord" : {"$near":[-73.871194, 40.6730975], "$maxDistance":10000}})		//圆心-半径	从近到远自动排序
+	db.collectionName.find({"coord" : {"$within":{"$box":[[-73.871194, 40.6730975],[-73.871194, 40.6730975]]}}})	//方形范围内
+
+	db.collectionName.find({"coord" : {"$within":{"$center":[[-73.871194, 40.6730975],5]}}, "description": "coffee shop"})
+
+	Exp:group
+	db.collectionName.group({
+				"key":{"name":true},							//分组的字段
+				"initial":{"counts":0,"street":""},					//需要输出的内容
+				"$reduce":function(doc, prev){prev.counts++;},				//对initial的内容处理
+				"finalize":function(prev){if(!!!prev.street){prev.street = 'temp'}}})	//最后执行的操作
+
+	Exp:mapReduce
+	map = function (){
+		for(var key in this){
+		emit(key, {"count":1});
+	}}
+	reduce = function (key,emits){
+		total =0; 
+		for(var i in emits){
+			total += emits[i].count; 
+		}
+		return {"count":total};
+	}
+	mr = db.runCommand({"mapreduce":"test","map":map,"reduce":reduce,"out":"every_field_total_count"})
+	db[mr.result].find()
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+三、documents's operations
+
+1.delete
+delete joe.name
+
+
+四、Index
+1.创建普通索引
+db.collectionName.ensureIndex({"age":1,"name":-1},{"name":"age_index"})
+
+2.创建唯一索引
+db.collectionName.ensureIndex({"age":1},{"name":"age_index_unique"},{"unique":true})
+
+3.创建地理索引
+db.collectionName.ensureIndex({"address.coord":"2d"})
+
+4.创建地理复合索引
+db.collectionName.ensureIndex({"address.coord":"2d", "description":1})
+
+5.查询索引
+db.collectionName.getIndexes()
+
+6.删除索引
+db.collectionName.dropIndex("age_index")
+
+
+五、USER
+1.createUser
+
+a Database User Roles(数据库用户角色)：read、readWrite
+b Database Administration Roles(数据库管理角色)：dbAdmin、dbOwner、userAdmin
+c Culster Administration Roles(管理员组，针对整个系统进行管理)：clusterAdmin、clusterManager、clusterMonitor、hostManager
+d Backup and Restoration Roles(备份还原角色组)：backup、restore
+e All-Database Roles(所有数据库角色)：readAnyDatabase、readWriteAnyDatabase、userAdminAnyDatabase、dbAdminAnyDatabase
+f Superuser Roles(超级管理员)：root、(dbOwner、userAdmin、userAdminAnyDatabase这几个角色角色提供了任何数据任何用户的任何权限的能力，拥有这个角色的用户可以在任何数据库上定义它们自己的权限)
+
+db.createUser({
+"user":"root",
+"pwd":"123456",
+"roles":[
+{"role":"read","db":"admin"},
+{"role":"readWrite","db":"admin"},
+{"role":"userAdminAnyDatabase","db":"admin"}
+]})
+
+
+管理员
+db.createUser({
+"user":"root",
+"pwd":"123456",
+"roles":[
+{"role":"root","db":"admin"}
+]})
+
+从库/副本节点复制主库/活跃节点的用户		操作从库/副本库所用user
+db.createUser({
+"user":"cluster_adm",
+"pwd":"123456",
+"roles":[
+{"role":"readWrite","db":"local"},
+{"role":"readWrite","db":"test"}
+]})
